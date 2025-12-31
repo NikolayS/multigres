@@ -1,30 +1,36 @@
 #!/bin/bash
 # Run a single pgbench test and output results in a parseable format
+# Based on methodology from:
+# https://gitlab.com/postgres-ai/postgresql-consulting/tests-and-benchmarks/-/issues/63
 
 set -e
 
 usage() {
-    echo "Usage: $0 -h HOST -p PORT -n NAME -c CLIENTS -t TIME -T TYPE [-w WARMUP] [-j JOBS]"
+    echo "Usage: $0 -h HOST -p PORT -n NAME -c CLIENTS -t TIME -T TYPE [-j JOBS] [-P PROGRESS] [-r PROTOCOL]"
     echo ""
     echo "Options:"
-    echo "  -h HOST    Database host"
-    echo "  -p PORT    Database port"
-    echo "  -n NAME    Target name (for output)"
-    echo "  -c CLIENTS Number of clients"
-    echo "  -t TIME    Test duration in seconds"
-    echo "  -T TYPE    Test type: simple, default, readonly"
-    echo "  -w WARMUP  Warmup time in seconds (default: 10)"
-    echo "  -j JOBS    Number of threads (default: 4)"
+    echo "  -h HOST      Database host"
+    echo "  -p PORT      Database port"
+    echo "  -n NAME      Target name (for output)"
+    echo "  -c CLIENTS   Number of clients (default: 4)"
+    echo "  -t TIME      Test duration in seconds (default: 300)"
+    echo "  -T TYPE      Test type: simple, default, readonly"
+    echo "  -j JOBS      Number of threads (default: 4)"
+    echo "  -P PROGRESS  Progress interval in seconds (default: 30)"
+    echo "  -r PROTOCOL  Query protocol: simple, extended (default: extended)"
     exit 1
 }
 
-# Defaults
-WARMUP=10
+# Defaults matching issue #63 methodology
+CLIENTS=4
+TIME=300
 JOBS=4
+PROGRESS=30
+PROTOCOL=extended
 PGUSER=${PGUSER:-postgres}
-PGDATABASE=${PGDATABASE:-bench}
+PGDATABASE=${PGDATABASE:-postgres}
 
-while getopts "h:p:n:c:t:T:w:j:" opt; do
+while getopts "h:p:n:c:t:T:j:P:r:" opt; do
     case $opt in
         h) HOST=$OPTARG ;;
         p) PORT=$OPTARG ;;
@@ -32,32 +38,34 @@ while getopts "h:p:n:c:t:T:w:j:" opt; do
         c) CLIENTS=$OPTARG ;;
         t) TIME=$OPTARG ;;
         T) TYPE=$OPTARG ;;
-        w) WARMUP=$OPTARG ;;
         j) JOBS=$OPTARG ;;
+        P) PROGRESS=$OPTARG ;;
+        r) PROTOCOL=$OPTARG ;;
         *) usage ;;
     esac
 done
 
-if [ -z "$HOST" ] || [ -z "$PORT" ] || [ -z "$NAME" ] || [ -z "$CLIENTS" ] || [ -z "$TIME" ] || [ -z "$TYPE" ]; then
+if [ -z "$HOST" ] || [ -z "$PORT" ] || [ -z "$NAME" ] || [ -z "$TYPE" ]; then
     usage
 fi
 
 # Build pgbench command based on test type
+# Issue #63 uses: pgbench -T 300 -P 30 -r -c 4 -j 4 -S --protocol extended
 case $TYPE in
     simple)
         # Simple SELECT 1 - measures pure proxy overhead
-        PGBENCH_OPTS="-S -f /dev/stdin"
-        SCRIPT="SELECT 1;"
+        PGBENCH_OPTS="-S"
+        CUSTOM_SCRIPT=1
         ;;
     default)
         # Default TPC-B like workload
         PGBENCH_OPTS=""
-        SCRIPT=""
+        CUSTOM_SCRIPT=0
         ;;
     readonly)
-        # Read-only workload (SELECT only)
+        # Read-only workload (SELECT only) - primary test from issue #63
         PGBENCH_OPTS="-S"
-        SCRIPT=""
+        CUSTOM_SCRIPT=0
         ;;
     *)
         echo "Unknown test type: $TYPE"
@@ -65,65 +73,57 @@ case $TYPE in
         ;;
 esac
 
+# Add protocol option
+PGBENCH_OPTS="$PGBENCH_OPTS --protocol $PROTOCOL"
+
 # Create temp file for results
 TMPFILE=$(mktemp)
-trap "rm -f $TMPFILE" EXIT
-
-# Run warmup if requested
-if [ "$WARMUP" -gt 0 ]; then
-    echo "# Warming up for ${WARMUP}s..." >&2
-    if [ "$TYPE" = "simple" ]; then
-        echo "$SCRIPT" | pgbench -h "$HOST" -p "$PORT" -U "$PGUSER" -d "$PGDATABASE" \
-            -c "$CLIENTS" -j "$JOBS" -T "$WARMUP" $PGBENCH_OPTS >/dev/null 2>&1 || true
-    else
-        pgbench -h "$HOST" -p "$PORT" -U "$PGUSER" -d "$PGDATABASE" \
-            -c "$CLIENTS" -j "$JOBS" -T "$WARMUP" $PGBENCH_OPTS >/dev/null 2>&1 || true
-    fi
-fi
+trap "rm -f $TMPFILE ${TMPFILE}.* 2>/dev/null" EXIT
 
 # Run the actual benchmark
-echo "# Running ${TYPE} benchmark: ${NAME} with ${CLIENTS} clients for ${TIME}s..." >&2
+# Matches: pgbench -T 300 -P 30 -r -c 4 -j 4 -S --protocol extended postgres
+echo "# Running ${TYPE} benchmark: ${NAME}" >&2
+echo "# Command: pgbench -T $TIME -P $PROGRESS -r -c $CLIENTS -j $JOBS $PGBENCH_OPTS" >&2
 
-if [ "$TYPE" = "simple" ]; then
-    echo "$SCRIPT" | pgbench -h "$HOST" -p "$PORT" -U "$PGUSER" -d "$PGDATABASE" \
-        -c "$CLIENTS" -j "$JOBS" -T "$TIME" -P 5 --log --log-prefix="$TMPFILE" \
-        $PGBENCH_OPTS 2>&1 | tee "${TMPFILE}.out"
+if [ "$CUSTOM_SCRIPT" = "1" ]; then
+    # Create custom script for SELECT 1
+    SCRIPT_FILE=$(mktemp)
+    echo "SELECT 1;" > "$SCRIPT_FILE"
+    trap "rm -f $TMPFILE ${TMPFILE}.* $SCRIPT_FILE 2>/dev/null" EXIT
+
+    pgbench -h "$HOST" -p "$PORT" -U "$PGUSER" -d "$PGDATABASE" \
+        -c "$CLIENTS" -j "$JOBS" -T "$TIME" -P "$PROGRESS" -r \
+        --protocol "$PROTOCOL" -f "$SCRIPT_FILE" \
+        2>&1 | tee "${TMPFILE}.out"
 else
     pgbench -h "$HOST" -p "$PORT" -U "$PGUSER" -d "$PGDATABASE" \
-        -c "$CLIENTS" -j "$JOBS" -T "$TIME" -P 5 --log --log-prefix="$TMPFILE" \
-        $PGBENCH_OPTS 2>&1 | tee "${TMPFILE}.out"
+        -c "$CLIENTS" -j "$JOBS" -T "$TIME" -P "$PROGRESS" -r \
+        $PGBENCH_OPTS \
+        2>&1 | tee "${TMPFILE}.out"
 fi
 
 # Parse and output results
 OUTPUT="${TMPFILE}.out"
 
 # Extract metrics from pgbench output
-TPS=$(grep "tps = " "$OUTPUT" | tail -1 | sed 's/.*tps = \([0-9.]*\).*/\1/')
+# Example output:
+# tps = 10821.928070 (without initial connection time)
+# latency average = 0.369 ms
+# latency stddev = 0.099 ms
+TPS=$(grep "tps = " "$OUTPUT" | grep -v "including" | tail -1 | sed 's/.*tps = \([0-9.]*\).*/\1/')
 LATENCY_AVG=$(grep "latency average" "$OUTPUT" | sed 's/.*= \([0-9.]*\) ms.*/\1/')
 LATENCY_STDDEV=$(grep "latency stddev" "$OUTPUT" | sed 's/.*= \([0-9.]*\) ms.*/\1/')
 
-# Calculate percentiles from log file if available
-LOGFILE=$(ls ${TMPFILE}.* 2>/dev/null | grep -v ".out" | head -1)
-if [ -n "$LOGFILE" ] && [ -f "$LOGFILE" ]; then
-    # Log format: client_id transaction_no time usec_since_epoch latency
-    # Column 4 is latency in microseconds
-    SORTED=$(sort -t' ' -k4 -n "$LOGFILE")
-    TOTAL=$(echo "$SORTED" | wc -l)
-
-    if [ "$TOTAL" -gt 0 ]; then
-        P50_LINE=$((TOTAL * 50 / 100))
-        P95_LINE=$((TOTAL * 95 / 100))
-        P99_LINE=$((TOTAL * 99 / 100))
-
-        P50=$(echo "$SORTED" | sed -n "${P50_LINE}p" | awk '{print $4/1000}')
-        P95=$(echo "$SORTED" | sed -n "${P95_LINE}p" | awk '{print $4/1000}')
-        P99=$(echo "$SORTED" | sed -n "${P99_LINE}p" | awk '{print $4/1000}')
-    fi
-    rm -f "$LOGFILE"
-fi
+# Extract statement latency for the SELECT query
+STMT_LATENCY=$(grep "SELECT" "$OUTPUT" | head -1 | awk '{print $1}')
 
 # Output in CSV format
 echo ""
 echo "# Results (CSV format):"
-echo "target,test_type,clients,tps,latency_avg_ms,latency_stddev_ms,latency_p50_ms,latency_p95_ms,latency_p99_ms"
-echo "${NAME},${TYPE},${CLIENTS},${TPS:-0},${LATENCY_AVG:-0},${LATENCY_STDDEV:-0},${P50:-0},${P95:-0},${P99:-0}"
+echo "target,test_type,clients,tps,latency_avg_ms,latency_stddev_ms,stmt_latency_ms"
+echo "${NAME},${TYPE},${CLIENTS},${TPS:-0},${LATENCY_AVG:-0},${LATENCY_STDDEV:-0},${STMT_LATENCY:-0}"
+
+# Also output overhead calculation hint
+echo ""
+echo "# Latency: ${LATENCY_AVG:-0} ms (stddev: ${LATENCY_STDDEV:-0} ms)"
+echo "# TPS: ${TPS:-0}"

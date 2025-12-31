@@ -1,6 +1,7 @@
 #!/bin/bash
 # Main benchmark runner script
-# Runs all configured benchmarks and collects results
+# Based on methodology from:
+# https://gitlab.com/postgres-ai/postgresql-consulting/tests-and-benchmarks/-/issues/63
 
 set -e
 
@@ -17,7 +18,7 @@ mkdir -p "$RESULTS_DIR"
 
 # Results file
 RESULTS_FILE="${RESULTS_DIR}/results.csv"
-echo "target,test_type,clients,tps,latency_avg_ms,latency_stddev_ms,latency_p50_ms,latency_p95_ms,latency_p99_ms,run" > "$RESULTS_FILE"
+echo "target,test_type,clients,tps,latency_avg_ms,latency_stddev_ms,stmt_latency_ms,run" > "$RESULTS_FILE"
 
 # Log file
 LOG_FILE="${RESULTS_DIR}/benchmark.log"
@@ -42,7 +43,10 @@ get_endpoint() {
             echo "${PGDOG_HOST:-localhost}:${PGDOG_PORT:-6433}"
             ;;
         spqr)
-            echo "${SPQR_HOST:-localhost}:${SPQR_PORT:-6434}"
+            echo "${SPQR_HOST:-localhost}:${SPQR_PORT:-6435}"
+            ;;
+        citus)
+            echo "${CITUS_HOST:-localhost}:${CITUS_PORT:-6434}"
             ;;
         *)
             echo "localhost:5432"
@@ -84,8 +88,9 @@ run_benchmark() {
         -c "$clients" \
         -t "$PGBENCH_TIME" \
         -T "$test_type" \
-        -w "$WARMUP_TIME" \
-        -j "$PGBENCH_JOBS" 2>&1)
+        -j "$PGBENCH_JOBS" \
+        -P "$PGBENCH_PROGRESS" \
+        -r "$PGBENCH_PROTOCOL" 2>&1)
 
     # Extract CSV line and append run number
     local csv_line
@@ -93,7 +98,9 @@ run_benchmark() {
 
     if [ -n "$csv_line" ]; then
         echo "${csv_line},${run_num}" >> "$RESULTS_FILE"
-        log "  TPS: $(echo "$csv_line" | cut -d',' -f4)"
+        local tps=$(echo "$csv_line" | cut -d',' -f4)
+        local lat=$(echo "$csv_line" | cut -d',' -f5)
+        log "  TPS: ${tps}, Latency: ${lat} ms"
     else
         log "  WARNING: No results captured"
     fi
@@ -105,13 +112,15 @@ run_benchmark() {
 # Print banner
 echo "=============================================="
 echo "PostgreSQL Proxy Latency Benchmark"
+echo "Based on: gitlab.com/postgres-ai/.../issues/63"
 echo "=============================================="
 echo ""
 log "Starting benchmark run: ${TIMESTAMP}"
 log "Configuration:"
 log "  Scale factor: ${PGBENCH_SCALE}"
 log "  Test duration: ${PGBENCH_TIME}s"
-log "  Warmup: ${WARMUP_TIME}s"
+log "  Progress interval: ${PGBENCH_PROGRESS}s"
+log "  Protocol: ${PGBENCH_PROTOCOL}"
 log "  Repeats: ${REPEATS}"
 log "  Client counts: ${PGBENCH_CLIENTS}"
 log "  Test types: ${TEST_TYPES}"
