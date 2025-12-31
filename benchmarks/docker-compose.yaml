@@ -1,0 +1,189 @@
+services:
+  # PostgreSQL database (shared backend)
+  postgres:
+    image: postgres:16
+    container_name: bench-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: bench
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bench"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bench-net
+
+  # PgBouncer connection pooler
+  pgbouncer:
+    image: bitnami/pgbouncer:1.23.1
+    container_name: bench-pgbouncer
+    environment:
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: 5432
+      POSTGRESQL_USERNAME: postgres
+      POSTGRESQL_PASSWORD: postgres
+      POSTGRESQL_DATABASE: bench
+      PGBOUNCER_PORT: 6432
+      PGBOUNCER_DATABASE: bench
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: 10000
+      PGBOUNCER_DEFAULT_POOL_SIZE: 100
+      PGBOUNCER_MIN_POOL_SIZE: 10
+      PGBOUNCER_RESERVE_POOL_SIZE: 25
+      PGBOUNCER_AUTH_TYPE: trust
+      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 6432 -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bench-net
+
+  # etcd for multigres topology
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.9
+    container_name: bench-etcd
+    command:
+      - etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --initial-cluster-state=new
+    volumes:
+      - etcd-data:/etcd-data
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bench-net
+
+  # Multigres pgctld - manages PostgreSQL
+  pgctld:
+    image: multigres:latest
+    container_name: bench-pgctld
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - pgctld
+      - server
+      - --grpc-port=15200
+      - --pg-port=5432
+      - --pg-host=postgres
+      - --pg-user=postgres
+      - --pg-database=bench
+      - --log-level=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bench-net
+
+  # Multigres multipooler - connection pooling
+  multipooler:
+    image: multigres:latest
+    container_name: bench-multipooler
+    command:
+      - multipooler
+      - --grpc-port=15100
+      - --database=bench
+      - --table-group=default
+      - --shard=0-inf
+      - --pgctld-addr=pgctld:15200
+      - --topo-global-server-addresses=etcd:2379
+      - --topo-global-root=/multigres/global
+      - --cell=zone1
+      - --log-level=info
+    depends_on:
+      - pgctld
+      - etcd
+    networks:
+      - bench-net
+
+  # Multigres multigateway - PostgreSQL protocol proxy
+  multigateway:
+    image: multigres:latest
+    container_name: bench-multigateway
+    command:
+      - multigateway
+      - --pg-port=15432
+      - --http-port=15080
+      - --topo-global-server-addresses=etcd:2379
+      - --topo-global-root=/multigres/global
+      - --cell=zone1
+      - --log-level=info
+    ports:
+      - "15432:15432"
+      - "15080:15080"
+    depends_on:
+      - multipooler
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 15432 -U postgres || exit 0"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - bench-net
+
+  # Multigres multiorch - cluster orchestration
+  multiorch:
+    image: multigres:latest
+    container_name: bench-multiorch
+    command:
+      - multiorch
+      - --cell=zone1
+      - --topo-global-server-addresses=etcd:2379
+      - --topo-global-root=/multigres/global
+      - --grpc-port=15300
+      - --http-port=15380
+      - --log-level=info
+    depends_on:
+      - etcd
+    networks:
+      - bench-net
+
+  # Benchmark runner container (optional - for containerized benchmarks)
+  benchmark:
+    image: postgres:16
+    container_name: bench-runner
+    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+    networks:
+      - bench-net
+    profiles:
+      - tools
+
+volumes:
+  postgres-data:
+  etcd-data:
+
+networks:
+  bench-net:
+    driver: bridge

@@ -1,0 +1,11 @@
+# Benchmark results (generated)
+results/
+
+# Temporary files
+*.tmp
+*.log
+
+# Editor files
+.idea/
+*.swp
+*~
