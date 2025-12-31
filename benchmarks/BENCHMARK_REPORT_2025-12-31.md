@@ -11,8 +11,8 @@
 | CPU | 16 vCPU (AMD EPYC-Milan) |
 | RAM | 64 GB |
 | OS | Ubuntu 24.04.3 LTS |
-| PostgreSQL | 18 (beta) |
-| Kernel | 6.8.0-90-generic |
+| PostgreSQL | 18.1 |
+| Kernel | 6.8.0-71-generic |
 
 ## Benchmark Configuration
 
@@ -30,54 +30,67 @@ pgbench -T 300 -P 30 -r -c 4 -j 4 -S --protocol extended postgres
 
 | System | Port | TPS (avg) | Latency (avg) | Status |
 |--------|------|-----------|---------------|--------|
-| **PostgreSQL (direct)** | 5432 | 18,702 | 0.214 ms | Baseline |
-| **PgBouncer** | 6432 | 10,770 | 0.371 ms | OK |
-| **PgDog** | 6433 | 9,070 | 0.440 ms | OK |
-| **Citus** | 6434 | 8,432 | 0.474 ms | OK |
+| **PostgreSQL (direct)** | 5432 | 16,589 | 0.240 ms | Baseline |
+| **PgBouncer** | 6432 | 10,323 | 0.387 ms | OK |
+| **PgDog** | 6433 | 8,518 | 0.469 ms | OK |
+| **Citus** | 6434 | 7,899 | 0.506 ms | OK |
 | **SPQR** | 6435 | — | — | FAILED |
-| **Multigres** | — | — | — | NOT TESTED |
+| **Multigres** | — | — | — | FAILED |
 
 ### Latency Overhead vs Direct PostgreSQL
 
 | System | Overhead |
 |--------|----------|
-| PgBouncer | +73% |
-| PgDog | +106% |
-| Citus | +121% |
+| PgBouncer | +61% |
+| PgDog | +95% |
+| Citus | +111% |
 
 ## Notes
 
 ### SPQR
-SPQR Docker container failed to start due to wrong image name. Used `pg-sharding/spqr-router` instead of correct `pgsharding/spqr-router` (no hyphen).
-
-**TODO:** Re-run with `docker pull pgsharding/spqr-router:latest`
+SPQR container started but immediately exited. Used correct image `pgsharding/spqr-router:latest`. Container logs showed it started but crashed. Port 6435 was not responding.
 
 ### Multigres
 
-**Multigres was not benchmarked** - failed to configure after multiple attempts.
+**Failed to configure after multiple attempts.**
 
-Multigres has a proxy layer (`multigateway`) that accepts PostgreSQL connections, which should be benchmarked like PgBouncer/PgDog. The setup requires etcd + pgctld + multipooler + multigateway, and configuration attempts failed due to flag/topology issues.
+Multigres has a proxy layer (`multigateway`) that should be benchmarked. Setup requires:
+1. etcd for topology storage
+2. pgctld for PostgreSQL lifecycle management
+3. multipooler for connection pooling
+4. multigateway for accepting client connections
 
-**TODO:** Re-attempt with proper configuration.
+**Issues encountered:**
+- Services refuse to run as root (security feature) - requires non-root user
+- Topology data must be protobuf-encoded, not JSON - can't use etcdctl directly
+- `multigres cluster start` failed due to etcd peer URL mismatch on public IP
+- Shard format validation (`0-inf` required for default tablegroup)
+- Cell topology structure requires specific protobuf schema
+
+**Conclusion:** Multigres is designed for production cluster orchestration, not ad-hoc benchmarking. A proper benchmark requires either:
+- Using the integration test harness (Go code)
+- Setting up a development environment with all dependencies
+- Fixing the `cluster start` etcd configuration for public IPs
 
 ### Citus
-Citus was tested using the official Docker image (`citusdata/citus:13`). Note that Citus is primarily a distributed database extension, so comparing it as a "proxy" is also somewhat misleading—it's included here for reference only.
+Tested using Docker image `citusdata/citus:13` (PostgreSQL 17.6). Note: Citus is primarily a distributed database extension, not a connection pooler.
 
 ## Conclusions
 
-1. **Direct PostgreSQL** provides the lowest latency baseline (0.214 ms)
-2. **PgBouncer** adds ~73% latency overhead but remains the fastest pooler tested
-3. **PgDog** (Rust-based) shows ~106% overhead, competitive for a newer project
-4. **Citus** shows higher overhead but serves a different purpose (distributed queries)
+1. **Direct PostgreSQL** provides the lowest latency baseline (0.240 ms)
+2. **PgBouncer** adds ~61% latency overhead but remains the fastest pooler
+3. **PgDog** (Rust-based) shows ~95% overhead
+4. **Citus** shows ~111% overhead (but serves different purpose - distributed queries)
+5. **SPQR** and **Multigres** could not be benchmarked in this test
 
 ## Recommendations for Future Benchmarks
 
-1. Test with higher concurrency (100+ clients) where pooling benefits become apparent
+1. Test with higher concurrency (100+ clients) where pooling benefits matter
 2. Include write workloads to measure transaction handling
-3. Test Multigres in a proper multi-node cluster configuration
-4. Re-attempt SPQR with manual container setup
+3. For Multigres: use integration test harness or fix etcd config
+4. For SPQR: debug container startup issues
 5. Add Odyssey and PgCat to the comparison
 
 ---
 
-*Report generated from Hetzner VM benchmarks. VM ID: 116513839*
+*Report generated from Hetzner VM benchmarks. VM ID: 116515289*
