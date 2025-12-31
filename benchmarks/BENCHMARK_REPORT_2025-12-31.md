@@ -48,34 +48,17 @@ pgbench -T 300 -P 30 -r -c 4 -j 4 -S --protocol extended postgres
 ## Notes
 
 ### SPQR
-SPQR Docker container failed to start. The Docker image pull failed with:
-```
-docker pull pg-sharding/spqr-router:latest
-docker pull ghcr.io/pg-sharding/spqr-router:latest
-```
-Both attempts failed, preventing SPQR from being benchmarked.
+SPQR Docker container failed to start due to wrong image name. Used `pg-sharding/spqr-router` instead of correct `pgsharding/spqr-router` (no hyphen).
+
+**TODO:** Re-run with `docker pull pgsharding/spqr-router:latest`
 
 ### Multigres
 
-**Multigres was not benchmarked** because it is architecturally different from the other systems tested.
+**Multigres was not benchmarked** - failed to configure after multiple attempts.
 
-Multigres is a **distributed PostgreSQL cluster orchestration platform** (similar to Vitess for MySQL), not a simple connection pooler or proxy. Its architecture requires:
+Multigres has a proxy layer (`multigateway`) that accepts PostgreSQL connections, which should be benchmarked like PgBouncer/PgDog. The setup requires etcd + pgctld + multipooler + multigateway, and configuration attempts failed due to flag/topology issues.
 
-1. **etcd** for topology and service discovery
-2. **pgctld** for PostgreSQL lifecycle management
-3. **multipooler** for connection pooling (connects to pgctld via gRPC)
-4. **multigateway** for accepting client connections
-5. **multiorch** for consensus and failover
-
-This multi-service architecture is designed for:
-- Horizontal scaling across multiple PostgreSQL nodes
-- Automatic failover and leader election
-- Sharding and query routing across table groups
-
-**Comparing Multigres to PgBouncer/PgDog in a single-node latency test would be misleading** because:
-- Multigres adds coordination overhead for features not being tested
-- The primary value proposition (cluster orchestration) isn't measured
-- A fair comparison would require a multi-node setup with failover scenarios
+**TODO:** Re-attempt with proper configuration.
 
 ### Citus
 Citus was tested using the official Docker image (`citusdata/citus:13`). Note that Citus is primarily a distributed database extension, so comparing it as a "proxy" is also somewhat misleading—it's included here for reference only.
