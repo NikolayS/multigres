@@ -59,6 +59,8 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		require.True(t, ok, "expected SelectStmt, got %T", stmts[0])
 
+		assert.Equal(t, "SELECT INTO", sel.StatementType(),
+			"SELECT INTO must NOT be classified as a plain SELECT — it creates a table")
 		require.NotNil(t, sel.IntoClause, "SELECT INTO must have IntoClause")
 		require.NotNil(t, sel.IntoClause.Rel, "IntoClause must have a target relation")
 		assert.Equal(t, "new_tbl", sel.IntoClause.Rel.RelName)
@@ -72,6 +74,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		require.True(t, ok, "expected SelectStmt, got %T", stmts[0])
 
+		assert.Equal(t, "SELECT INTO", sel.StatementType())
 		require.NotNil(t, sel.IntoClause, "SELECT INTO TABLE must have IntoClause")
 		assert.Equal(t, "new_tbl", sel.IntoClause.Rel.RelName)
 	})
@@ -103,6 +106,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		require.True(t, ok, "expected SelectStmt, got %T", stmts[0])
 
+		assert.Equal(t, "SELECT INTO", sel.StatementType())
 		require.NotNil(t, sel.IntoClause, "SELECT cols INTO must have IntoClause")
 		assert.Equal(t, "new_tbl", sel.IntoClause.Rel.RelName)
 
@@ -119,6 +123,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		require.True(t, ok, "expected SelectStmt, got %T", stmts[0])
 
+		assert.Equal(t, "SELECT INTO", sel.StatementType())
 		require.NotNil(t, sel.IntoClause, "SELECT INTO TEMP must have IntoClause")
 		assert.Equal(t, "tmp_tbl", sel.IntoClause.Rel.RelName)
 		assert.Equal(t, ast.RELPERSISTENCE_TEMP, sel.IntoClause.Rel.RelPersistence,
@@ -133,6 +138,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		require.True(t, ok, "expected SelectStmt, got %T", stmts[0])
 
+		assert.Equal(t, "SELECT INTO", sel.StatementType())
 		require.NotNil(t, sel.IntoClause)
 		assert.Equal(t, "new_tbl", sel.IntoClause.Rel.RelName)
 		assert.Equal(t, "myschema", sel.IntoClause.Rel.SchemaName)
@@ -144,6 +150,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, stmts, 1)
 
+		assert.Equal(t, "SELECT", stmts[0].StatementType())
 		output := stmts[0].SqlString()
 
 		// Re-parse the output
@@ -154,6 +161,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		sel2, ok := stmts2[0].(*ast.SelectStmt)
 		require.True(t, ok)
 		assert.Nil(t, sel2.IntoClause, "round-tripped SELECT FROM should still have no IntoClause")
+		assert.Equal(t, "SELECT", sel2.StatementType())
 	})
 
 	t.Run("round-trip: SELECT INTO stays as SELECT INTO", func(t *testing.T) {
@@ -162,6 +170,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, stmts, 1)
 
+		assert.Equal(t, "SELECT INTO", stmts[0].StatementType())
 		output := stmts[0].SqlString()
 
 		// Re-parse the output
@@ -173,6 +182,7 @@ func TestSelectFromVsSelectInto(t *testing.T) {
 		require.True(t, ok)
 		require.NotNil(t, sel2.IntoClause, "round-tripped SELECT INTO must still have IntoClause")
 		assert.Equal(t, "new_tbl", sel2.IntoClause.Rel.RelName)
+		assert.Equal(t, "SELECT INTO", sel2.StatementType())
 	})
 }
 
@@ -196,6 +206,7 @@ func TestSelectIntoIsNotInsertInto(t *testing.T) {
 
 		sel, ok := stmts[0].(*ast.SelectStmt)
 		assert.True(t, ok, "SELECT INTO should produce SelectStmt, got %T", stmts[0])
+		assert.Equal(t, "SELECT INTO", stmts[0].StatementType())
 		require.NotNil(t, sel.IntoClause)
 	})
 }

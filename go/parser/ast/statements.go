@@ -485,6 +485,9 @@ func (s *SelectStmt) String() string {
 }
 
 func (s *SelectStmt) StatementType() string {
+	if s.IntoClause != nil {
+		return "SELECT INTO"
+	}
 	return "SELECT"
 }
 
